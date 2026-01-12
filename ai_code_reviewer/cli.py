@@ -1,6 +1,5 @@
 """CLI 入口 - pre-commit hook"""
 
-import json
 import sys
 from pathlib import Path
 from typing import Optional
@@ -57,6 +56,44 @@ def print_review_result(result: ReviewResult):
         click.echo(click.style("没有发现问题", fg="green"))
 
     click.echo(separator)
+    click.echo()
+
+
+def print_compact_summary(result: ReviewResult):
+    """打印紧凑的问题摘要（用于 pre-commit 输出）"""
+    if not result.issues:
+        return
+
+    # 统计各级别问题
+    critical_count = sum(1 for i in result.issues if i.severity == SeverityLevel.CRITICAL)
+    warning_count = sum(1 for i in result.issues if i.severity == SeverityLevel.WARNING)
+    info_count = sum(1 for i in result.issues if i.severity == SeverityLevel.INFO)
+
+    # 只显示警告和信息
+    non_critical = [i for i in result.issues if i.severity != SeverityLevel.CRITICAL]
+    if not non_critical:
+        return
+
+    click.echo()
+    click.echo(click.style("AI 代码评审 - 问题摘要:", bold=True))
+
+    for issue in non_critical:
+        if issue.severity == SeverityLevel.WARNING:
+            icon = click.style("[警告]", fg="yellow")
+        else:
+            icon = click.style("[信息]", fg="blue")
+
+        click.echo(f"  {icon} {issue.file_path}:{issue.line_number or '?'} - {issue.description}")
+
+    # 统计信息
+    parts = []
+    if warning_count > 0:
+        parts.append(f"{warning_count} 个警告")
+    if info_count > 0:
+        parts.append(f"{info_count} 个信息")
+
+    if parts:
+        click.echo(f"  共: {', '.join(parts)}")
     click.echo()
 
 
@@ -123,6 +160,8 @@ def review(config: Optional[str]):
             )
             sys.exit(1)
         else:
+            # 评审通过，但显示警告和信息的紧凑摘要
+            print_compact_summary(result)
             click.echo(click.style("[通过] 评审完成", fg="green"))
             sys.exit(0)
 
