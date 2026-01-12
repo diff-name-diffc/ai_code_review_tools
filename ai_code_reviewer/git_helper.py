@@ -53,15 +53,19 @@ def get_staged_diff(max_file_size: int = 100_000) -> str:
     Returns:
         diff 内容
     """
-    # 获取所有暂存的文件
-    files = run_git_command(["diff", "--cached", "--name-only", "-z"])
+    try:
+        # 获取所有暂存的文件
+        files = run_git_command(["diff", "--cached", "--name-only", "-z"])
+    except subprocess.CalledProcessError:
+        return ""
+
     if not files:
         return ""
 
     file_list = [f for f in files.split("\0") if f]
     git_root = get_git_root()
 
-    # 过滤大文件
+    # 过滤大文件（只检查存在的文件）
     filtered_files = []
     for file_path in file_list:
         full_path = git_root / file_path
@@ -74,8 +78,15 @@ def get_staged_diff(max_file_size: int = 100_000) -> str:
         return ""
 
     # 获取 diff
-    diff = run_git_command(["diff", "--cached", "--unified=5"] + filtered_files)
-    return diff
+    try:
+        diff = run_git_command(["diff", "--cached", "--unified=5"] + filtered_files)
+        return diff
+    except subprocess.CalledProcessError:
+        # 文件可能被删除或其他问题，返回所有文件的 diff
+        try:
+            return run_git_command(["diff", "--cached", "--unified=5"])
+        except subprocess.CalledProcessError:
+            return ""
 
 
 def get_commit_message() -> str:
