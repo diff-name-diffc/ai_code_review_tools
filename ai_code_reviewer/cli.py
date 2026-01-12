@@ -190,7 +190,7 @@ def init(path: Optional[str]):
                 )
             )
             click.echo("\n请运行以下命令安装 pre-commit hooks:")
-            click.echo(click.style("  pip install pre-commit", fg="cyan"))
+            click.echo(click.style("  pipx install pre-commit", fg="cyan"))
             click.echo(click.style("  pre-commit install", fg="cyan"))
         else:
             click.echo(
