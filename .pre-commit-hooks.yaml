@@ -1,0 +1,9 @@
+# Pre-commit hooks 定义文件
+
+- id: ai-code-reviewer
+  name: AI Code Reviewer
+  entry: ai-code-reviewer review
+  language: python
+  pass_filenames: false
+  always_run: true
+  description: 使用 AI 对代码变更进行评审
