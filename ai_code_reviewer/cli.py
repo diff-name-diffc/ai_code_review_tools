@@ -7,20 +7,32 @@ from typing import Optional
 import click
 
 from .chains import create_review_chain
-from .commit_parser import parse_commit_type, should_review
+from .commit_parser import is_force_commit, parse_commit_type, should_review
 from .config import create_default_config, find_config_file, load_config
 from .git_helper import get_git_info
 from .models.review_result import ReviewResult, SeverityLevel
 
 
-def print_review_result(result: ReviewResult):
-    """打印评审结果"""
+def print_review_result(result: ReviewResult, commit_message: str = ""):
+    """打印评审结果
+
+    Args:
+        result: 评审结果
+        commit_message: 提交消息
+    """
     # 分隔线
     separator = "=" * 60
     click.echo()
     click.echo(separator)
     click.echo(f"  AI 代码评审报告")
     click.echo(separator)
+
+    # 显示提交消息
+    if commit_message:
+        # 只显示第一行（标题）
+        first_line = commit_message.split("\n", 1)[0].strip()
+        click.echo(f"提交消息: {first_line}")
+
     click.echo(f"Commit 类型: {result.commit_type}")
     click.echo(f"总体评估: {result.overall_assessment.upper()}")
     click.echo(separator)
@@ -110,8 +122,15 @@ def cli():
 
 @cli.command()
 @click.option("--config", "-c", type=click.Path(exists=True), help="配置文件路径")
-def review(config: Optional[str]):
-    """执行代码评审"""
+@click.argument("commit_msg_file", type=click.Path(exists=True), required=False)
+def commit_msg_review(config: Optional[str], commit_msg_file: Optional[str]):
+    """用于 commit-msg hook 的代码评审
+
+    这个命令专门用于 commit-msg hook，可以正确获取当前的 commit message。
+
+    Args:
+        commit_msg_file: commit message 文件路径（Git 会自动传入）
+    """
     try:
         # 加载配置
         if config:
@@ -119,9 +138,23 @@ def review(config: Optional[str]):
         else:
             cfg = load_config()
 
+        # 获取 commit message 文件路径
+        commit_msg_path = Path(commit_msg_file) if commit_msg_file else None
+
         # 获取 Git 信息并检查是否需要评审
-        git_info = get_git_info(max_file_size=cfg.max_file_size)
+        git_info = get_git_info(
+            max_file_size=cfg.max_file_size, commit_msg_file_path=commit_msg_path
+        )
         commit_type = parse_commit_type(git_info.commit_message)
+
+        # 检查是否为强制提交（跳过 AI 审查）
+        if is_force_commit(git_info.commit_message):
+            click.echo(
+                click.style(
+                    "[强制提交] 检测到 -f 标志，跳过 AI 审查", fg="cyan", bold=True
+                )
+            )
+            sys.exit(0)
 
         # 检查是否需要评审
         if not should_review(commit_type, cfg.enabled_types):
@@ -144,8 +177,8 @@ def review(config: Optional[str]):
         click.echo("[AI 代码评审] 正在分析...")
         result: ReviewResult = chain.invoke({})
 
-        # 打印结果
-        print_review_result(result)
+        # 打印结果（传入提交消息）
+        print_review_result(result, git_info.commit_message)
 
         # 保存日志
         if cfg.output_file:
@@ -168,6 +201,11 @@ def review(config: Optional[str]):
     except FileNotFoundError as e:
         click.echo(click.style(f"[错误] {e}", fg="red"), err=True)
         sys.exit(1)
+    except ValueError as e:
+        # 处理 commit message 获取失败的情况
+        click.echo(click.style(f"[错误] {e}", fg="red"), err=True)
+        click.echo("\n提示：请确保在 Git commit-msg hook 中调用此命令。", err=True)
+        sys.exit(1)
     except Exception as e:
         click.echo(click.style(f"[错误] 评审失败: {e}", fg="red"), err=True)
         import traceback
@@ -176,28 +214,99 @@ def review(config: Optional[str]):
         sys.exit(1)
 
 
-# 默认 pre-commit 配置内容
-DEFAULT_PRECOMMIT_CONFIG = """# Pre-commit hooks 配置
-# 详见: https://pre-commit.com/
+@cli.command()
+@click.option("--config", "-c", type=click.Path(exists=True), help="配置文件路径")
+def review(config: Optional[str]):
+    """执行代码评审"""
+    try:
+        # 加载配置
+        if config:
+            cfg = load_config(Path(config))
+        else:
+            cfg = load_config()
 
-repos:
-  # AI Code Reviewer - 基于 LangChain 的代码评审
-  - repo: local
-    hooks:
-      - id: ai-code-reviewer
-        name: AI Code Reviewer
-        entry: ai-code-reviewer review
-        language: python
-        pass_filenames: false
-        always_run: true
+        # 获取 Git 信息并检查是否需要评审
+        git_info = get_git_info(max_file_size=cfg.max_file_size)
+        commit_type = parse_commit_type(git_info.commit_message)
 
-  # 可选: 添加更多 pre-commit hooks
-  # - repo: https://github.com/pre-commit/pre-commit-hooks
-  #   hooks:
-  #     - id: trailing-whitespace
-  #     - id: end-of-file-fixer
-  #     - id: check-yaml
-  #     - id: check-added-large-files
+        # 检查是否为强制提交（跳过 AI 审查）
+        if is_force_commit(git_info.commit_message):
+            click.echo(
+                click.style(
+                    "[强制提交] 检测到 -f 标志，跳过 AI 审查", fg="cyan", bold=True
+                )
+            )
+            sys.exit(0)
+
+        # 检查是否需要评审
+        if not should_review(commit_type, cfg.enabled_types):
+            click.echo(
+                click.style(
+                    f"[跳过] Commit 类型 '{commit_type}' 不在评审列表中", fg="yellow"
+                )
+            )
+            sys.exit(0)
+
+        # 没有变更内容，跳过评审
+        if not git_info.staged_diff:
+            click.echo(click.style("[跳过] 没有需要评审的变更", fg="yellow"))
+            sys.exit(0)
+
+        # 创建评审链
+        chain = create_review_chain(cfg)
+
+        # 执行评审
+        click.echo("[AI 代码评审] 正在分析...")
+        result: ReviewResult = chain.invoke({})
+
+        # 打印结果（传入提交消息）
+        print_review_result(result, git_info.commit_message)
+
+        # 保存日志
+        if cfg.output_file:
+            log_file = Path(cfg.output_file)
+            save_review_log(result, log_file)
+            click.echo(f"评审日志已保存到: {log_file}")
+
+        # 判断是否需要拦截
+        if result.has_critical:
+            click.echo(
+                click.style("[拦截] 发现致命错误，请修复后重新提交", fg="red", bold=True)
+            )
+            sys.exit(1)
+        else:
+            # 评审通过，但显示警告和信息的紧凑摘要
+            print_compact_summary(result)
+            click.echo(click.style("[通过] 评审完成", fg="green"))
+            sys.exit(0)
+
+    except FileNotFoundError as e:
+        click.echo(click.style(f"[错误] {e}", fg="red"), err=True)
+        sys.exit(1)
+    except ValueError as e:
+        # 处理 commit message 获取失败的情况
+        click.echo(click.style(f"[错误] {e}", fg="red"), err=True)
+        click.echo("\n提示：review 命令可能无法准确获取 commit message。", err=True)
+        click.echo("建议：使用 commit-msg-review 命令或通过 Git hook 自动调用。", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(click.style(f"[错误] 评审失败: {e}", fg="red"), err=True)
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
+
+
+# Git commit-msg hook 脚本
+COMMIT_MSG_HOOK_SCRIPT = """#!/bin/sh
+# AI Code Reviewer - commit-msg hook
+# 此脚本会在输入 commit message 后执行
+
+# 获取 commit message 文件路径（Git 自动传入第一个参数）
+COMMIT_MSG_FILE="$1"
+
+# 执行 AI 代码评审
+ai-code-reviewer commit-msg-review "$COMMIT_MSG_FILE"
 """
 
 
@@ -215,26 +324,44 @@ def init(path: Optional[str]):
         )
         click.echo("\n请编辑配置文件，设置你的 API Key 等信息。")
 
-        # 检查并创建 .pre-commit-config.yaml
-        precommit_config_path = Path.cwd() / ".pre-commit-config.yaml"
-        if not precommit_config_path.exists():
-            precommit_config_path.write_text(
-                DEFAULT_PRECOMMIT_CONFIG, encoding="utf-8"
-            )
-            click.echo(
-                click.style(
-                    f"[成功] Pre-commit 配置已创建: {precommit_config_path}",
-                    fg="green",
-                    bold=True,
+        # 安装 Git commit-msg hook
+        git_hooks_dir = Path.cwd() / ".git" / "hooks"
+        if git_hooks_dir.exists():
+            commit_msg_hook_path = git_hooks_dir / "commit-msg"
+
+            # 检查是否已存在 hook
+            if commit_msg_hook_path.exists():
+                click.echo(
+                    click.style(
+                        f"\n[警告] commit-msg hook 已存在: {commit_msg_hook_path}",
+                        fg="yellow",
+                    )
                 )
-            )
-            click.echo("\n请运行以下命令安装 pre-commit hooks:")
-            click.echo(click.style("  pipx install pre-commit", fg="cyan"))
-            click.echo(click.style("  pre-commit install", fg="cyan"))
+                click.echo("如需使用 AI 代码评审，请手动编辑该文件添加以下内容：")
+                click.echo(click.style(COMMIT_MSG_HOOK_SCRIPT, fg="cyan"))
+            else:
+                # 创建 commit-msg hook
+                commit_msg_hook_path.write_text(COMMIT_MSG_HOOK_SCRIPT, encoding="utf-8")
+                # 设置可执行权限
+                commit_msg_hook_path.chmod(0o755)
+                click.echo(
+                    click.style(
+                        f"\n[成功] Git commit-msg hook 已创建: {commit_msg_hook_path}",
+                        fg="green",
+                        bold=True,
+                    )
+                )
+                click.echo("\n现在你可以正常提交代码，AI 会自动评审：")
+                click.echo(click.style('  git commit -m "feat: 你的提交消息"', fg="cyan"))
+                click.echo("\n使用 -f 标志可以跳过 AI 审查：")
+                click.echo(
+                    click.style('  git commit -m "feat: 紧急修复 -f"', fg="cyan")
+                )
         else:
             click.echo(
                 click.style(
-                    f"[跳过] .pre-commit-config.yaml 已存在", fg="yellow"
+                    "\n[警告] 未找到 .git 目录，请确保在 Git 仓库根目录执行此命令",
+                    fg="yellow",
                 )
             )
 

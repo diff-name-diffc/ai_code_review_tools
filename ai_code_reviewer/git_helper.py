@@ -89,46 +89,77 @@ def get_staged_diff(max_file_size: int = 100_000) -> str:
             return ""
 
 
-def get_commit_message() -> str:
+def get_commit_message(commit_msg_file_path: Path | None = None) -> str:
     """获取 commit message
 
-    从以下位置按优先级读取：
-    1. 环境变量 GIT_COMMITTER_NAME 或其他 Git hook 相关变量
-    2. .git/COMMIT_EDITMSG 文件
-    3. git log 最后一条（用于测试）
+    Args:
+        commit_msg_file_path: commit message 文件路径（用于 commit-msg hook）
+
+    Returns:
+        commit message 内容
+
+    Raises:
+        ValueError: 无法获取 commit message 时抛出异常
+
+    读取优先级：
+    1. 传入的 commit_msg_file_path 参数（commit-msg hook）- 最高优先级
+    2. 环境变量 COMMIT_MSG
+    3. .git/COMMIT_EDITMSG 文件（仅用于兼容性，不推荐）
     """
-    # pre-commit hook 阶段，尝试从环境变量读取
-    # Git 在执行 hook 时会设置一些环境变量
+    # 优先从传入的文件路径读取（commit-msg hook）
+    if commit_msg_file_path:
+        if not commit_msg_file_path.exists():
+            raise ValueError(f"Commit message 文件不存在: {commit_msg_file_path}")
+
+        content = commit_msg_file_path.read_text(encoding="utf-8").strip()
+        if not content:
+            raise ValueError(f"Commit message 文件为空: {commit_msg_file_path}")
+
+        return content
+
+    # 从环境变量读取
     commit_msg = os.getenv("COMMIT_MSG")
-    if commit_msg:
+    if commit_msg and commit_msg.strip():
         return commit_msg.strip()
 
-    # 从 .git/COMMIT_EDITMSG 读取
+    # 从 .git/COMMIT_EDITMSG 读取（仅用于兼容性）
+    # 注意：这个文件可能包含旧的内容，不推荐依赖
     git_root = get_git_root()
     commit_msg_file = git_root / ".git" / "COMMIT_EDITMSG"
 
     if commit_msg_file.exists():
         content = commit_msg_file.read_text(encoding="utf-8").strip()
         if content:
+            # 添加警告：这可能不是当前的 commit message
+            import sys
+            print(
+                "[警告] 未从 commit-msg hook 获取消息，使用 COMMIT_EDITMSG 文件（可能不准确）",
+                file=sys.stderr,
+            )
             return content
 
-    # fallback: 从 git log 获取最后一条（用于测试）
-    try:
-        return run_git_command(["log", "-1", "--pretty=%B"])
-    except subprocess.CalledProcessError:
-        return ""
+    # 如果所有方式都失败，抛出错误而不是返回错误的内容
+    raise ValueError(
+        "无法获取 commit message。请确保：\n"
+        "1. 使用 commit-msg hook 调用此工具\n"
+        "2. 或设置 COMMIT_MSG 环境变量\n"
+        "3. 或确保在 Git 仓库中且有提交历史"
+    )
 
 
-def get_git_info(max_file_size: int = 100_000) -> GitInfo:
+def get_git_info(
+    max_file_size: int = 100_000, commit_msg_file_path: Path | None = None
+) -> GitInfo:
     """获取 Git 信息
 
     Args:
         max_file_size: 最大文件大小
+        commit_msg_file_path: commit message 文件路径（用于 commit-msg hook）
 
     Returns:
         GitInfo: Git 信息
     """
-    commit_message = get_commit_message()
+    commit_message = get_commit_message(commit_msg_file_path)
     staged_diff = get_staged_diff(max_file_size=max_file_size)
 
     return GitInfo(
