@@ -29,7 +29,7 @@ class ReviewOutputParser(BaseOutputParser[ReviewResult]):
         # 尝试提取 JSON
         json_str = self._extract_json(text)
         if not json_str:
-            raise OutputParserException(f"无法从输出中提取 JSON: {text[:200]}...")
+            raise OutputParserException(f"无法从输出中提取 JSON: {text}")
 
         try:
             data = json.loads(json_str)
