@@ -77,7 +77,6 @@ def print_compact_summary(result: ReviewResult):
         return
 
     # 统计各级别问题
-    critical_count = sum(1 for i in result.issues if i.severity == SeverityLevel.CRITICAL)
     warning_count = sum(1 for i in result.issues if i.severity == SeverityLevel.WARNING)
     info_count = sum(1 for i in result.issues if i.severity == SeverityLevel.INFO)
 
@@ -310,9 +309,120 @@ ai-code-reviewer commit-msg-review "$COMMIT_MSG_FILE"
 """
 
 
+def is_valid_git_repository(base_path: Path) -> tuple[bool, str]:
+    """验证路径是否位于有效的 Git 仓库内
+
+    Args:
+        base_path: 要检查的基础路径（通常是当前工作目录）
+
+    Returns:
+        (是否有效, 错误消息)
+    """
+    git_dir = base_path / ".git"
+
+    # 检查 .git 目录是否存在
+    if not git_dir.exists():
+        return False, f"未找到 .git 目录: {git_dir}"
+
+    # 检查 .git 是否为目录（而非文件，如 git worktree 的情况）
+    if not git_dir.is_dir():
+        # .git 可能是文件（git worktree 场景），读取文件内容找到真实的 git 目录
+        try:
+            git_file_content = git_dir.read_text(encoding="utf-8").strip()
+            if git_file_content.startswith("gitdir:"):
+                # 这是一个 worktree，暂时不支持
+                return False, ".git 是 worktree 引用文件，请在主仓库目录运行 init 命令"
+        except Exception as e:
+            return False, f".git 文件格式无效: {e}"
+        return False, ".git 不是目录"
+
+    # 验证关键的 Git 仓库文件
+    git_head = git_dir / "HEAD"
+    git_config = git_dir / "config"
+
+    if not git_head.exists():
+        return False, "无效的 Git 仓库：缺少 .git/HEAD 文件"
+
+    if not git_config.exists():
+        return False, "无效的 Git 仓库：缺少 .git/config 文件"
+
+    # 验证 HEAD 文件格式
+    try:
+        head_content = git_head.read_text(encoding="utf-8").strip()
+        # HEAD 应该是 "ref: refs/heads/xxx" 或一个 commit hash
+        if not (head_content.startswith("ref:") or len(head_content) == 40):
+            return False, "无效的 Git 仓库：.git/HEAD 内容格式错误"
+    except Exception as e:
+        return False, f"无法读取 .git/HEAD: {e}"
+
+    return True, ""
+
+
+def validate_hook_path_safety(hook_path: Path, hooks_dir: Path) -> tuple[bool, str]:
+    """验证 hook 文件路径的安全性
+
+    Args:
+        hook_path: hook 文件路径
+        hooks_dir: hooks 目录路径
+
+    Returns:
+        (是否安全, 错误消息)
+    """
+    try:
+        # 1. 确保路径在 .git/hooks 目录下（防止路径遍历攻击）
+        resolved_hook = hook_path.resolve()
+        resolved_hooks_dir = hooks_dir.resolve()
+
+        if not str(resolved_hook).startswith(str(resolved_hooks_dir)):
+            return False, f"安全错误: hook 路径 {resolved_hook} 不在 hooks 目录 {resolved_hooks_dir} 下"
+
+        # 2. 检查是否为符号链接
+        if hook_path.is_symlink():
+            link_target = hook_path.readlink()
+            return False, f"安全错误: hook 文件是符号链接，指向 {link_target}。请手动处理符号链接。"
+
+        # 3. 如果文件存在，检查是否为普通文件
+        if hook_path.exists():
+            # 使用 stat 检查文件类型
+            stat_info = hook_path.stat()
+            import stat
+            if not stat.S_ISREG(stat_info.st_mode):
+                return False, f"安全错误: hook 路径不是普通文件（可能是设备、管道等）"
+
+        return True, ""
+
+    except Exception as e:
+        return False, f"路径验证失败: {e}"
+
+
+def safe_write_hook_file(hook_path: Path, content: str) -> None:
+    """安全地写入 hook 文件
+
+    Args:
+        hook_path: hook 文件路径
+        content: 文件内容
+
+    Raises:
+        ValueError: 如果路径不安全
+    """
+    # 先写入临时文件，然后原子性重命名
+    temp_path = hook_path.with_suffix('.tmp')
+    try:
+        temp_path.write_text(content, encoding="utf-8")
+        temp_path.chmod(0o755)
+        # 原子性重命名
+        temp_path.replace(hook_path)
+    except Exception as e:
+        # 清理临时文件
+        if temp_path.exists():
+            temp_path.unlink()
+        raise e
+
+
 @cli.command()
 @click.option("--path", "-p", type=click.Path(), help="配置文件保存路径")
-def init(path: Optional[str]):
+@click.option("--force", "-f", is_flag=True, help="强制覆盖已存在的 commit-msg hook")
+def init(path: Optional[str], force: bool):
     """初始化配置文件"""
     try:
         # 创建 AI Reviewer 配置文件
@@ -324,39 +434,154 @@ def init(path: Optional[str]):
         )
         click.echo("\n请编辑配置文件，设置你的 API Key 等信息。")
 
+        # 验证是否在有效的 Git 仓库内
+        is_valid, error_msg = is_valid_git_repository(Path.cwd())
+        if not is_valid:
+            click.echo(
+                click.style(
+                    f"\n[错误] {error_msg}",
+                    fg="red"
+                ),
+                err=True
+            )
+            click.echo(
+                "\n提示：请确保在 Git 仓库根目录下运行此命令。",
+                err=True
+            )
+            return
+
         # 安装 Git commit-msg hook
         git_hooks_dir = Path.cwd() / ".git" / "hooks"
         if git_hooks_dir.exists():
             commit_msg_hook_path = git_hooks_dir / "commit-msg"
 
+            # 安全性验证
+            is_safe, error_msg = validate_hook_path_safety(commit_msg_hook_path, git_hooks_dir)
+            if not is_safe:
+                click.echo(click.style(f"\n[错误] {error_msg}", fg="red"), err=True)
+                click.echo("\n请手动处理该文件后重新运行 init 命令。")
+                click.echo("需要添加的内容：")
+                click.echo(click.style(COMMIT_MSG_HOOK_SCRIPT, fg="cyan"))
+                return
+
             # 检查是否已存在 hook
             if commit_msg_hook_path.exists():
-                click.echo(
-                    click.style(
-                        f"\n[警告] commit-msg hook 已存在: {commit_msg_hook_path}",
-                        fg="yellow",
-                    )
-                )
-                click.echo("如需使用 AI 代码评审，请手动编辑该文件添加以下内容：")
-                click.echo(click.style(COMMIT_MSG_HOOK_SCRIPT, fg="cyan"))
+                # 如果使用 --force 选项，显示警告后直接覆盖
+                if force:
+                    try:
+                        # 读取并显示现有内容（让用户知道被覆盖的内容）
+                        existing_content = commit_msg_hook_path.read_text(encoding="utf-8")
+                        click.echo(
+                            click.style(
+                                f"\n[警告] 使用 --force 选项，将覆盖现有 hook: {commit_msg_hook_path}",
+                                fg="yellow",
+                                bold=True
+                            )
+                        )
+                        click.echo("原有内容：")
+                        click.echo(click.style(existing_content, fg="cyan", dim=True))
+
+                        # 直接覆盖
+                        safe_write_hook_file(commit_msg_hook_path, COMMIT_MSG_HOOK_SCRIPT)
+                        click.echo(
+                            click.style(
+                                f"\n[成功] Git commit-msg hook 已覆盖: {commit_msg_hook_path}",
+                                fg="green",
+                                bold=True,
+                            )
+                        )
+                    except Exception as e:
+                        click.echo(
+                            click.style(f"\n[错误] 覆盖 hook 文件失败: {e}", fg="red"),
+                            err=True
+                        )
+                        return
+                else:
+                    # 非 force 模式，使用原有的智能追加逻辑
+                    try:
+                        # 读取现有 hook 内容
+                        existing_content = commit_msg_hook_path.read_text(encoding="utf-8")
+                    except Exception as e:
+                        click.echo(
+                            click.style(f"\n[错误] 无法读取现有 hook 文件: {e}", fg="red"),
+                            err=True
+                        )
+                        return
+
+                    # 检查是否已包含 AI reviewer 调用
+                    ai_reviewer_marker = "ai-code-reviewer commit-msg-review"
+                    if ai_reviewer_marker in existing_content:
+                        click.echo(
+                            click.style(
+                                f"\n[成功] commit-msg hook 已包含 AI 代码评审功能",
+                                fg="green",
+                            )
+                        )
+                    else:
+                        # 询问用户是否追加
+                        click.echo(
+                            click.style(
+                                f"\n[警告] commit-msg hook 已存在: {commit_msg_hook_path}",
+                                fg="yellow",
+                            )
+                        )
+                        click.echo("现有内容：")
+                        click.echo(click.style(existing_content, fg="cyan", dim=True))
+
+                        if click.confirm("\n是否在现有 hook 中追加 AI 代码评审功能？", default=True):
+                            try:
+                                # 在现有内容后追加 AI reviewer 调用
+                                # 确保有换行符分隔
+                                separator = "\n" if not existing_content.endswith("\n") else ""
+                                new_content = existing_content + separator + "\n# AI Code Reviewer\n" + "ai-code-reviewer commit-msg-review \"$1\"\n"
+
+                                # 使用安全写入方法
+                                safe_write_hook_file(commit_msg_hook_path, new_content)
+
+                                click.echo(
+                                    click.style(
+                                        f"\n[成功] 已将 AI 代码评审功能追加到 commit-msg hook",
+                                        fg="green",
+                                        bold=True,
+                                    )
+                                )
+                            except Exception as e:
+                                click.echo(
+                                    click.style(f"\n[错误] 写入 hook 文件失败: {e}", fg="red"),
+                                    err=True
+                                )
+                                return
+                        else:
+                            click.echo("\n跳过 hook 安装。如需手动添加，请在 hook 中添加以下内容：")
+                            click.echo(click.style(COMMIT_MSG_HOOK_SCRIPT, fg="cyan"))
+                            click.echo("\n提示：你也可以使用 --force 选项强制覆盖：")
+                            click.echo(click.style("  ai-code-reviewer init --force", fg="cyan"))
+                            return
             else:
                 # 创建 commit-msg hook
-                commit_msg_hook_path.write_text(COMMIT_MSG_HOOK_SCRIPT, encoding="utf-8")
-                # 设置可执行权限
-                commit_msg_hook_path.chmod(0o755)
-                click.echo(
-                    click.style(
-                        f"\n[成功] Git commit-msg hook 已创建: {commit_msg_hook_path}",
-                        fg="green",
-                        bold=True,
+                try:
+                    safe_write_hook_file(commit_msg_hook_path, COMMIT_MSG_HOOK_SCRIPT)
+                    click.echo(
+                        click.style(
+                            f"\n[成功] Git commit-msg hook 已创建: {commit_msg_hook_path}",
+                            fg="green",
+                            bold=True,
+                        )
                     )
-                )
-                click.echo("\n现在你可以正常提交代码，AI 会自动评审：")
-                click.echo(click.style('  git commit -m "feat: 你的提交消息"', fg="cyan"))
-                click.echo("\n使用 -f 标志可以跳过 AI 审查：")
-                click.echo(
-                    click.style('  git commit -m "feat: 紧急修复 -f"', fg="cyan")
-                )
+                except Exception as e:
+                    click.echo(
+                        click.style(f"\n[错误] 创建 hook 文件失败: {e}", fg="red"),
+                        err=True
+                    )
+                    return
+
+            # 统一的使用说明
+            click.echo("\n现在你可以正常提交代码，AI 会自动评审：")
+            click.echo(click.style('  git commit -m "feat: 你的提交消息"', fg="cyan"))
+            click.echo("\n使用 -f 标志可以跳过 AI 审查：")
+            click.echo(
+                click.style('  git commit -m "feat: 紧急修复 -f"', fg="cyan")
+            )
         else:
             click.echo(
                 click.style(

@@ -63,3 +63,20 @@ def should_review(commit_type: Optional[str], enabled_types: list[str]) -> bool:
 def get_commit_type_description(commit_type: str) -> str:
     """获取 commit 类型描述"""
     return COMMIT_TYPES.get(commit_type, commit_type)
+
+
+def is_force_commit(commit_message: str) -> bool:
+    """检查是否为强制提交（跳过 AI 审查）
+
+    Args:
+        commit_message: commit message
+
+    Returns:
+        如果提交消息以 ' -f' 结尾，则返回 True
+    """
+    if not commit_message:
+        return False
+
+    # 检查提交消息是否以 -f 结尾（支持空格）
+    first_line = commit_message.split("\n", 1)[0].strip()
+    return first_line.endswith(" -f") or first_line.endswith("-f")

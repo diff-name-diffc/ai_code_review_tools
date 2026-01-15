@@ -48,7 +48,13 @@ ai-code-reviewer init
 此命令会创建两个文件：
 
 1. **`.ai-reviewer.toml`** - AI 评审器配置文件
-2. **`.pre-commit-config.yaml`** - Pre-commit hook 配置文件（如果不存在）
+2. **`.git/hooks/commit-msg`** - Git commit-msg hook（自动安装）
+
+**重要提示**：
+- ⚠️ 必须在 Git 仓库根目录下运行此命令
+- ✅ 自动验证 Git 仓库有效性
+- ✅ 检测并智能处理已存在的 hooks
+- ✅ 多重安全检查防止误操作
 
 ### 2. 编辑配置文件
 
@@ -76,14 +82,39 @@ output_file = ".ai-review-log.json"  # 评审日志文件
 | Azure OpenAI | Azure 端点 URL |
 | 其他兼容服务 | 相应的 API 端点 |
 
-### 3. 安装 Pre-commit Hooks
+### 3. 安装 Git Hooks
+
+运行初始化命令会智能安装 `commit-msg` hook：
 
 ```bash
-# 安装 pre-commit（如果还没安装）
-pip install pre-commit
+# init 命令会自动创建 .git/hooks/commit-msg
+# 无需额外操作
+```
 
-# 安装 hooks
-pre-commit install
+**智能安装特性**：
+
+- ✅ **自动检测**：如果 hook 已存在，会检查是否包含 AI 代码评审功能
+- ✅ **交互式追加**：如果 hook 存在但未包含 AI 功能，会询问是否追加
+- ✅ **安全验证**：自动检查符号链接、路径遍历等安全问题
+- ✅ **幂等性**：多次运行不会重复安装
+
+**处理已存在的 hook**：
+
+如果你已经有其他 Git hooks（如 pre-commit、Husky 等），`init` 命令会：
+
+1. 显示现有 hook 内容
+2. 询问是否在现有内容后追加 AI 代码评审调用
+3. 保留原有功能，不会破坏现有 hook
+
+示例输出：
+
+```
+[警告] commit-msg hook 已存在: .git/hooks/commit-msg
+现有内容：
+#!/bin/sh
+# Your existing hook content
+
+是否在现有 hook 中追加 AI 代码评审功能？ [Y/n]:
 ```
 
 ### 4. 提交代码
@@ -95,23 +126,65 @@ git add .
 git commit -m "feat: 添加用户认证功能"
 ```
 
+**重要说明**：AI 评审会在你输入 commit message **之后**执行，可以正确读取你当前的提交消息。
+
 ## 命令说明
 
 ### `init` - 初始化配置
 
 ```bash
-ai-code-reviewer init
+ai-code-reviewer init [选项]
 ```
 
-创建配置文件和 pre-commit hook 配置。
+**选项**：
+- `-p, --path <路径>` - 指定配置文件保存路径
+- `-f, --force` - 强制覆盖已存在的 commit-msg hook
 
-### `review` - 执行评审
+**功能**：
+创建以下文件：
+- `.ai-reviewer.toml` - AI 评审配置文件
+- `.git/hooks/commit-msg` - Git commit-msg hook（自动安装）
+
+**示例**：
+
+```bash
+# 普通初始化（智能追加模式）
+ai-code-reviewer init
+
+# 强制覆盖已存在的 hook
+ai-code-reviewer init --force
+
+# 指定配置文件路径
+ai-code-reviewer init --path /path/to/config.toml
+```
+
+**行为说明**：
+
+1. **默认模式（无 --force）**：
+   - 如果 hook 不存在，创建新文件
+   - 如果 hook 已存在且包含 AI 功能，显示成功消息
+   - 如果 hook 已存在但不包含 AI 功能，询问是否追加
+
+2. **强制模式（--force）**：
+   - 显示现有 hook 内容
+   - 直接覆盖为 AI 代码评审 hook
+   - ⚠️ 警告：会丢失原有 hook 内容
+
+### `commit-msg-review` - 用于 commit-msg hook
+
+```bash
+ai-code-reviewer commit-msg-review <commit-msg-file>
+```
+
+此命令由 Git commit-msg hook 自动调用，**不需要手动执行**。它会在输入 commit message 后执行 AI 评审。
+
+### `review` - 手动执行评审（可选）
 
 ```bash
 ai-code-reviewer review
 ```
 
-手动执行代码评审，无需提交。
+手动执行代码评审，用于测试或调试。注意：此命令可能无法获取到正确的 commit message。
 
 ### `check` - 检查配置
 
@@ -150,28 +223,51 @@ ai-code-reviewer check
 
 - **info (信息)**: 提示性建议
 
-## Pre-commit Hook 配置
+## Git Hook 说明
 
-项目使用 `language: system` 方式配置 hook，确保使用正确的虚拟环境：
+本工具使用 **Git commit-msg hook** 而不是 pre-commit hook，这样可以：
 
-```yaml
-# .pre-commit-config.yaml
-repos:
-  - repo: local
-    hooks:
-      - id: ai-code-reviewer
-        name: AI Code Reviewer
-        entry: .venv/bin/python -m ai_code_reviewer.cli review
-        language: system
-        pass_filenames: false
-        always_run: true
+1. ✅ **正确获取 commit message**：在用户输入 commit message 后执行
+2. ✅ **更准确的评审**：可以结合 commit message 和代码变更进行评审
+3. ✅ **支持强制提交**：通过 `-f` 标志跳过评审
+
+### 自动安装
+
+运行 `ai-code-reviewer init` 会自动创建 `.git/hooks/commit-msg` 文件。
+
+### 手动安装（如果需要）
+
+如果需要手动安装 hook，创建 `.git/hooks/commit-msg` 文件：
+
+```bash
+#!/bin/sh
+# AI Code Reviewer - commit-msg hook
+
+COMMIT_MSG_FILE="$1"
+ai-code-reviewer commit-msg-review "$COMMIT_MSG_FILE"
 ```
 
-**注意**：如果你的虚拟环境路径不是 `.venv`，请相应修改 `entry` 中的路径。
+然后设置可执行权限：
+
+```bash
+chmod +x .git/hooks/commit-msg
+```
 
 ## 跳过评审
 
-如果需要跳过 AI 评审（不推荐），可以使用：
+### 方式一：使用 -f 强制提交标志（推荐）
+
+在提交消息的最后添加 `-f` 标志，可以跳过 AI 审查直接提交：
+
+```bash
+git commit -m "feat: 紧急修复生产问题 -f"
+```
+
+这种方式适合紧急情况或不需要 AI 审查的提交。
+
+### 方式二：使用 --no-verify
+
+如果需要跳过所有 pre-commit hooks（不推荐），可以使用：
 
 ```bash
 git commit --no-verify -m "your message"

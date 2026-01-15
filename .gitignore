@@ -52,3 +52,6 @@ dmypy.json
 # Tools
 .tox/
 .ruff_cache/
+
+.DS_Store
+.ai-reviewer.toml
