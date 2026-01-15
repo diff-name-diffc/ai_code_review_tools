@@ -309,20 +309,20 @@ ai-code-reviewer commit-msg-review "$COMMIT_MSG_FILE"
 """
 
 
-def is_valid_git_repository(base_path: Path) -> tuple[bool, str]:
+def is_valid_git_repository(base_path: Path) -> tuple[bool, str, Path]:
     """验证路径是否位于有效的 Git 仓库内
 
     Args:
         base_path: 要检查的基础路径（通常是当前工作目录）
 
     Returns:
-        (是否有效, 错误消息)
+        (是否有效, 错误消息, hooks目录路径)
     """
     git_dir = base_path / ".git"
 
     # 检查 .git 目录是否存在
     if not git_dir.exists():
-        return False, f"未找到 .git 目录: {git_dir}"
+        return False, f"未找到 .git 目录: {git_dir}", Path()
 
     # 检查 .git 是否为目录（而非文件，如 git worktree 的情况）
     if not git_dir.is_dir():
@@ -330,32 +330,66 @@ def is_valid_git_repository(base_path: Path) -> tuple[bool, str]:
         try:
             git_file_content = git_dir.read_text(encoding="utf-8").strip()
             if git_file_content.startswith("gitdir:"):
-                # 这是一个 worktree，暂时不支持
-                return False, ".git 是 worktree 引用文件，请在主仓库目录运行 init 命令"
-        except Exception as e:
-            return False, f".git 文件格式无效: {e}"
-        return False, ".git 不是目录"
+                # 这是一个 worktree，解析真实的 git 目录路径
+                gitdir_path = git_file_content.split(":", 1)[1].strip()
 
+                # 支持相对路径和绝对路径
+                if Path(gitdir_path).is_absolute():
+                    real_git_dir = Path(gitdir_path)
+                else:
+                    real_git_dir = (base_path / gitdir_path).resolve()
+
+                # 验证解析出的 git 目录是否存在
+                if not real_git_dir.exists():
+                    return False, f"Worktree 引用的 git 目录不存在: {real_git_dir}", Path()
+
+                # Worktree 的 hooks 目录在 commondir 指向的主仓库中
+                commondir_file = real_git_dir / "commondir"
+                if commondir_file.exists():
+                    # 读取 commondir，它指向主仓库的 .git 目录
+                    commondir_path = commondir_file.read_text(encoding="utf-8").strip()
+                    if Path(commondir_path).is_absolute():
+                        common_git_dir = Path(commondir_path)
+                    else:
+                        common_git_dir = (real_git_dir / commondir_path).resolve()
+
+                    hooks_dir = common_git_dir / "hooks"
+                else:
+                    # 没有 commondir，hooks 目录在当前 git 目录下
+                    hooks_dir = real_git_dir / "hooks"
+
+                # 验证 hooks 目录
+                if not hooks_dir.exists():
+                    return False, f"未找到 hooks 目录: {hooks_dir}", Path()
+
+                return True, "", hooks_dir
+        except Exception as e:
+            return False, f".git 文件解析失败: {e}", Path()
+        return False, ".git 不是目录", Path()
+
+    # 标准 Git 仓库（.git 是目录）
     # 验证关键的 Git 仓库文件
     git_head = git_dir / "HEAD"
     git_config = git_dir / "config"
 
     if not git_head.exists():
-        return False, "无效的 Git 仓库：缺少 .git/HEAD 文件"
+        return False, "无效的 Git 仓库：缺少 .git/HEAD 文件", Path()
 
     if not git_config.exists():
-        return False, "无效的 Git 仓库：缺少 .git/config 文件"
+        return False, "无效的 Git 仓库：缺少 .git/config 文件", Path()
 
     # 验证 HEAD 文件格式
     try:
         head_content = git_head.read_text(encoding="utf-8").strip()
         # HEAD 应该是 "ref: refs/heads/xxx" 或一个 commit hash
         if not (head_content.startswith("ref:") or len(head_content) == 40):
-            return False, "无效的 Git 仓库：.git/HEAD 内容格式错误"
+            return False, "无效的 Git 仓库：.git/HEAD 内容格式错误", Path()
     except Exception as e:
-        return False, f"无法读取 .git/HEAD: {e}"
+        return False, f"无法读取 .git/HEAD: {e}", Path()
 
-    return True, ""
+    # 标准仓库的 hooks 目录
+    hooks_dir = git_dir / "hooks"
+    return True, "", hooks_dir
 
 
 def validate_hook_path_safety(hook_path: Path, hooks_dir: Path) -> tuple[bool, str]:
@@ -425,21 +459,12 @@ def safe_write_hook_file(hook_path: Path, content: str) -> None:
 def init(path: Optional[str], force: bool):
     """初始化配置文件"""
     try:
-        # 创建 AI Reviewer 配置文件
-        config_path = create_default_config(Path(path) if path else None)
-        click.echo(
-            click.style(
-                f"[成功] 配置文件已创建: {config_path}", fg="green", bold=True
-            )
-        )
-        click.echo("\n请编辑配置文件，设置你的 API Key 等信息。")
-
-        # 验证是否在有效的 Git 仓库内
-        is_valid, error_msg = is_valid_git_repository(Path.cwd())
+        # 先验证是否在有效的 Git 仓库内（避免在验证失败后残留配置文件）
+        is_valid, error_msg, hooks_dir = is_valid_git_repository(Path.cwd())
         if not is_valid:
             click.echo(
                 click.style(
-                    f"\n[错误] {error_msg}",
+                    f"[错误] {error_msg}",
                     fg="red"
                 ),
                 err=True
@@ -450,13 +475,21 @@ def init(path: Optional[str], force: bool):
             )
             return
 
-        # 安装 Git commit-msg hook
-        git_hooks_dir = Path.cwd() / ".git" / "hooks"
-        if git_hooks_dir.exists():
-            commit_msg_hook_path = git_hooks_dir / "commit-msg"
+        # 创建 AI Reviewer 配置文件
+        config_path = create_default_config(Path(path) if path else None)
+        click.echo(
+            click.style(
+                f"[成功] 配置文件已创建: {config_path}", fg="green", bold=True
+            )
+        )
+        click.echo("\n请编辑配置文件，设置你的 API Key 等信息。")
+
+        # 安装 Git commit-msg hook（使用 is_valid_git_repository 返回的 hooks_dir）
+        if hooks_dir.exists():
+            commit_msg_hook_path = hooks_dir / "commit-msg"
 
             # 安全性验证
-            is_safe, error_msg = validate_hook_path_safety(commit_msg_hook_path, git_hooks_dir)
+            is_safe, error_msg = validate_hook_path_safety(commit_msg_hook_path, hooks_dir)
             if not is_safe:
                 click.echo(click.style(f"\n[错误] {error_msg}", fg="red"), err=True)
                 click.echo("\n请手动处理该文件后重新运行 init 命令。")
@@ -585,7 +618,7 @@ def init(path: Optional[str], force: bool):
         else:
             click.echo(
                 click.style(
-                    "\n[警告] 未找到 .git 目录，请确保在 Git 仓库根目录执行此命令",
+                    f"\n[警告] 未找到 hooks 目录: {hooks_dir}，请确保在有效的 Git 仓库根目录执行此命令",
                     fg="yellow",
                 )
             )
