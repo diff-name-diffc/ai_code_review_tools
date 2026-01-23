@@ -13,6 +13,12 @@
 
 ## 安装
 
+### 使用 pip 安装（推荐）
+
+```bash
+pip install pre-commit-ai-reviewer
+```
+
 ### 从源码安装
 
 ```bash
