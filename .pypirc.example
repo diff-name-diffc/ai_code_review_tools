@@ -1,0 +1,18 @@
+# PyPI 配置文件示例
+#
+# 使用方法：
+# 1. 将此文件复制到 ~/.pypirc
+# 2. 替换 <你的PyPI_API_Token> 为你的实际 Token
+# 3. 设置安全权限: chmod 600 ~/.pypirc
+#
+# 获取 API Token:
+# - PyPI: https://pypi.org/manage/account/token/
+# - TestPyPI: https://test.pypi.org/manage/account/token/
+
+[pypi]
+username = __token__
+password = <你的PyPI_API_Token>
+
+[testpypi]
+username = __token__
+password = <你的TestPyPI_API_Token>

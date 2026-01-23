@@ -1,7 +1,7 @@
 [project]
-name = "ai-code-reviewer"
+name = "pre-commit-ai-reviewer"
 version = "0.1.0"
-description = "基于 LangChain 的 Git 代码评审工具"
+description = "基于 LangChain 的 Pre-commit Git 代码评审工具"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -26,7 +26,7 @@ dev = [
 ]
 
 [project.scripts]
-ai-code-reviewer = "ai_code_reviewer.cli:main"
+pre-commit-ai-reviewer = "ai_code_reviewer.cli:main"
 
 [build-system]
 requires = ["hatchling"]
