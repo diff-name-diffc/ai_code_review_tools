@@ -7,6 +7,7 @@ from typing import Optional
 import click
 
 from .chains import create_review_chain
+from .chains.review_chain import setup_debug_logging
 from .commit_parser import is_force_commit, parse_commit_type, should_review
 from .config import create_default_config, find_config_file, load_config
 from .git_helper import get_git_info
@@ -121,8 +122,10 @@ def cli():
 
 @cli.command()
 @click.option("--config", "-c", type=click.Path(exists=True), help="配置文件路径")
+@click.option("--debug", "-d", is_flag=True, help="启用调试日志，打印发送给 LLM 的完整内容")
+@click.option("--debug-file", type=click.Path(), help="调试日志输出文件路径")
 @click.argument("commit_msg_file", type=click.Path(exists=True), required=False)
-def commit_msg_review(config: Optional[str], commit_msg_file: Optional[str]):
+def commit_msg_review(config: Optional[str], debug: bool, debug_file: Optional[str], commit_msg_file: Optional[str]):
     """用于 commit-msg hook 的代码评审
 
     这个命令专门用于 commit-msg hook，可以正确获取当前的 commit message。
@@ -131,6 +134,10 @@ def commit_msg_review(config: Optional[str], commit_msg_file: Optional[str]):
         commit_msg_file: commit message 文件路径（Git 会自动传入）
     """
     try:
+        # 设置调试日志
+        if debug or debug_file:
+            setup_debug_logging(verbose=debug, log_file=debug_file)
+
         # 加载配置
         if config:
             cfg = load_config(Path(config))
@@ -208,9 +215,6 @@ def commit_msg_review(config: Optional[str], commit_msg_file: Optional[str]):
         click.echo(click.style(f"[错误] {e}", fg="red"), err=True)
         click.echo("\n提示：请确保在 Git commit-msg hook 中调用此命令。", err=True)
         sys.exit(1)
-
-# === commit_msg_review 命令的评审链创建 ===
-# 需要更新第 175-176 行的 create_review_chain 调用
     except Exception as e:
         click.echo(click.style(f"[错误] 评审失败: {e}", fg="red"), err=True)
         import traceback
@@ -221,9 +225,18 @@ def commit_msg_review(config: Optional[str], commit_msg_file: Optional[str]):
 
 @cli.command()
 @click.option("--config", "-c", type=click.Path(exists=True), help="配置文件路径")
-def review(config: Optional[str]):
-    """执行代码评审"""
+@click.option("--debug", "-d", is_flag=True, help="启用调试日志，打印发送给 LLM 的完整内容")
+@click.option("--debug-file", type=click.Path(), help="调试日志输出文件路径")
+def review(config: Optional[str], debug: bool, debug_file: Optional[str]):
+    """执行代码评审
+
+    使用 --debug 选项可以查看发送给 LLM 的完整内容用于调试。
+    """
     try:
+        # 设置调试日志
+        if debug or debug_file:
+            setup_debug_logging(verbose=debug, log_file=debug_file)
+
         # 加载配置
         if config:
             cfg = load_config(Path(config))
