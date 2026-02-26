@@ -6,7 +6,7 @@ from pathlib import Path
 import toml
 from pydantic import ValidationError
 
-from .models.config import LLMConfig, ReviewerConfig
+from .models.config import DiffProcessConfig, LLMConfig, ReviewerConfig
 
 
 DEFAULT_CONFIG_PATH = ".ai-reviewer.toml"
@@ -20,8 +20,21 @@ base_url = "http://localhost:11434/v1"  # 例如: "http://localhost:11434/v1" fo
 [reviewer]
 enabled_types = ["feat", "fix", "refactor", "doc", "config"]
 max_file_size = 100000
-excluded_patterns = ["*.lock", "package-lock.json", "*.min.js"]
+
+# 白名单：只评审这些后缀的文件（留空表示不过滤）
+included_extensions = [".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rs"]
+
+# 黑名单：排除的文件模式
+excluded_patterns = ["*.lock", "package-lock.json", "*.min.js", "*.min.css"]
+
 output_file = ".ai-review-log.json"  # 日志文件目录默认: ".ai-review-log.json"
+
+[reviewer.diff_process]
+enabled = true           # 是否启用 diff 精简
+max_files = 20           # 最多处理的文件数
+max_hunks_per_file = 10  # 每文件最多变更块
+context_lines = 3        # 上下文行数
+max_total_lines = 500    # 最大总行数
 """
 
 
@@ -79,6 +92,10 @@ def load_config(config_path: Path | None = None) -> ReviewerConfig:
     # 构建评审器配置
     reviewer_data = data.get("reviewer", {})
     reviewer_data["llm"] = LLMConfig(**llm_data)
+
+    # 处理 diff_process 嵌套配置
+    if "diff_process" in reviewer_data:
+        reviewer_data["diff_process"] = DiffProcessConfig(**reviewer_data["diff_process"])
 
     return ReviewerConfig(**reviewer_data)
 

@@ -1,5 +1,6 @@
 """Git 操作封装模块"""
 
+import fnmatch
 import os
 import subprocess
 from pathlib import Path
@@ -44,11 +45,52 @@ def get_git_root() -> Path:
     return Path(root)
 
 
-def get_staged_diff(max_file_size: int = 100_000) -> str:
+def filter_files_by_pattern(
+    file_list: list[str],
+    included_extensions: list[str] | None = None,
+    excluded_patterns: list[str] | None = None,
+) -> list[str]:
+    """按白名单和黑名单过滤文件
+
+    Args:
+        file_list: 文件路径列表
+        included_extensions: 白名单后缀（如 [".py", ".js"]），为空则不过滤
+        excluded_patterns: 黑名单 glob 模式（如 ["*.lock"]）
+
+    Returns:
+        过滤后的文件列表
+    """
+    filtered = []
+    for file_path in file_list:
+        path = Path(file_path)
+
+        # 白名单检查
+        if included_extensions:
+            ext = path.suffix.lower()
+            allowed_exts = [e.lower() for e in included_extensions]
+            if ext not in allowed_exts:
+                continue
+
+        # 黑名单检查
+        if excluded_patterns:
+            if any(fnmatch.fnmatch(file_path, p) for p in excluded_patterns):
+                continue
+
+        filtered.append(file_path)
+    return filtered
+
+
+def get_staged_diff(
+    max_file_size: int = 100_000,
+    included_extensions: list[str] | None = None,
+    excluded_patterns: list[str] | None = None,
+) -> str:
     """获取暂存区的变更内容
 
     Args:
         max_file_size: 超过此大小的文件将被跳过
+        included_extensions: 白名单后缀，为空则不过滤
+        excluded_patterns: 黑名单 glob 模式
 
     Returns:
         diff 内容
@@ -65,7 +107,18 @@ def get_staged_diff(max_file_size: int = 100_000) -> str:
     file_list = [f for f in files.split("\0") if f]
     git_root = get_git_root()
 
-    # 过滤大文件（只检查存在的文件）
+    # 第一步：按后缀和模式过滤
+    if included_extensions or excluded_patterns:
+        file_list = filter_files_by_pattern(
+            file_list,
+            included_extensions=included_extensions,
+            excluded_patterns=excluded_patterns,
+        )
+
+    if not file_list:
+        return ""
+
+    # 第二步：过滤大文件（只检查存在的文件）
     filtered_files = []
     for file_path in file_list:
         full_path = git_root / file_path
@@ -148,19 +201,28 @@ def get_commit_message(commit_msg_file_path: Path | None = None) -> str:
 
 
 def get_git_info(
-    max_file_size: int = 100_000, commit_msg_file_path: Path | None = None
+    max_file_size: int = 100_000,
+    included_extensions: list[str] | None = None,
+    excluded_patterns: list[str] | None = None,
+    commit_msg_file_path: Path | None = None,
 ) -> GitInfo:
     """获取 Git 信息
 
     Args:
         max_file_size: 最大文件大小
+        included_extensions: 白名单后缀
+        excluded_patterns: 黑名单 glob 模式
         commit_msg_file_path: commit message 文件路径（用于 commit-msg hook）
 
     Returns:
         GitInfo: Git 信息
     """
     commit_message = get_commit_message(commit_msg_file_path)
-    staged_diff = get_staged_diff(max_file_size=max_file_size)
+    staged_diff = get_staged_diff(
+        max_file_size=max_file_size,
+        included_extensions=included_extensions,
+        excluded_patterns=excluded_patterns,
+    )
 
     return GitInfo(
         commit_message=commit_message,

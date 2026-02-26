@@ -1,5 +1,6 @@
 """LangChain 评审链"""
 
+from pathlib import Path
 from typing import Any
 
 from langchain_core.output_parsers import StrOutputParser
@@ -7,14 +8,19 @@ from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 
 from ..commit_parser import parse_commit_type
 from ..config import load_config
-from ..git_helper import get_git_info
+from ..diff_processor import process_diff
+from ..git_helper import GitInfo, get_git_info
 from ..models.config import ReviewerConfig
 from ..models.review_result import ReviewResult
 from ..parsers.review_parser import review_parser
 from ..prompts.templates import PromptFactory
 
 
-def create_review_chain(config: ReviewerConfig | None = None):
+def create_review_chain(
+    config: ReviewerConfig | None = None,
+    git_info: GitInfo | None = None,
+    commit_msg_file_path: Path | None = None,
+):
     """创建评审链
 
     使用 LCEL 构建：
@@ -26,6 +32,8 @@ def create_review_chain(config: ReviewerConfig | None = None):
 
     Args:
         config: 配置对象，如果为 None 则自动加载
+        git_info: Git 信息，如果提供则复用，否则重新获取
+        commit_msg_file_path: commit message 文件路径（用于 commit-msg hook）
 
     Returns:
         评审链
@@ -48,11 +56,25 @@ def create_review_chain(config: ReviewerConfig | None = None):
     # 构建链
     def prepare_input(_: Any) -> dict[str, Any]:
         """准备输入"""
-        git_info = get_git_info(max_file_size=config.max_file_size)
+        # 如果外部已提供 git_info，则复用；否则重新获取
+        nonlocal git_info
+        if git_info is None:
+            git_info = get_git_info(
+                max_file_size=config.max_file_size,
+                included_extensions=config.included_extensions,
+                excluded_patterns=config.excluded_patterns,
+                commit_msg_file_path=commit_msg_file_path,
+            )
         commit_type = parse_commit_type(git_info.commit_message)
 
+        # 精简 diff
+        if config.diff_process.enabled:
+            diff_to_send = process_diff(git_info.staged_diff, config.diff_process)
+        else:
+            diff_to_send = git_info.staged_diff
+
         return {
-            "diff": git_info.staged_diff,
+            "diff": diff_to_send,
             "commit_message": git_info.commit_message,
             "commit_type": commit_type,
         }

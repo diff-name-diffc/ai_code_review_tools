@@ -16,6 +16,16 @@ class LLMConfig(BaseModel):
     timeout: int = Field(default=30, description="超时时间（秒）")
 
 
+class DiffProcessConfig(BaseModel):
+    """Diff 精简配置"""
+
+    enabled: bool = Field(default=True, description="是否启用 diff 精简")
+    max_files: int = Field(default=20, description="最多处理的文件数")
+    max_hunks_per_file: int = Field(default=10, description="每文件最多变更块")
+    context_lines: int = Field(default=3, description="上下文行数")
+    max_total_lines: int = Field(default=500, description="最大总行数")
+
+
 class ReviewerConfig(BaseModel):
     """评审器配置"""
 
@@ -29,7 +39,15 @@ class ReviewerConfig(BaseModel):
     max_file_size: int = Field(
         default=100_000, description="跳过超过此大小的文件（字节）"
     )
+    included_extensions: list[str] = Field(
+        default=[".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rs"],
+        description="只评审这些后缀的文件（白名单），为空则不过滤",
+    )
     excluded_patterns: list[str] = Field(
-        default=["*.lock", "package-lock.json"], description="排除的文件 glob 模式"
+        default=["*.lock", "package-lock.json", "*.min.js", "*.min.css"],
+        description="排除的文件 glob 模式",
+    )
+    diff_process: DiffProcessConfig = Field(
+        default_factory=DiffProcessConfig, description="Diff 精简配置"
     )
     output_file: Optional[str] = Field(None, description="可选的日志文件路径")

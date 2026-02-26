@@ -142,7 +142,10 @@ def commit_msg_review(config: Optional[str], commit_msg_file: Optional[str]):
 
         # 获取 Git 信息并检查是否需要评审
         git_info = get_git_info(
-            max_file_size=cfg.max_file_size, commit_msg_file_path=commit_msg_path
+            max_file_size=cfg.max_file_size,
+            included_extensions=cfg.included_extensions,
+            excluded_patterns=cfg.excluded_patterns,
+            commit_msg_file_path=commit_msg_path,
         )
         commit_type = parse_commit_type(git_info.commit_message)
 
@@ -169,8 +172,8 @@ def commit_msg_review(config: Optional[str], commit_msg_file: Optional[str]):
             click.echo(click.style("[跳过] 没有需要评审的变更", fg="yellow"))
             sys.exit(0)
 
-        # 创建评审链
-        chain = create_review_chain(cfg)
+        # 创建评审链（传入 git_info 避免重复获取）
+        chain = create_review_chain(cfg, git_info=git_info)
 
         # 执行评审
         click.echo("[AI 代码评审] 正在分析...")
@@ -205,6 +208,9 @@ def commit_msg_review(config: Optional[str], commit_msg_file: Optional[str]):
         click.echo(click.style(f"[错误] {e}", fg="red"), err=True)
         click.echo("\n提示：请确保在 Git commit-msg hook 中调用此命令。", err=True)
         sys.exit(1)
+
+# === commit_msg_review 命令的评审链创建 ===
+# 需要更新第 175-176 行的 create_review_chain 调用
     except Exception as e:
         click.echo(click.style(f"[错误] 评审失败: {e}", fg="red"), err=True)
         import traceback
@@ -225,7 +231,11 @@ def review(config: Optional[str]):
             cfg = load_config()
 
         # 获取 Git 信息并检查是否需要评审
-        git_info = get_git_info(max_file_size=cfg.max_file_size)
+        git_info = get_git_info(
+            max_file_size=cfg.max_file_size,
+            included_extensions=cfg.included_extensions,
+            excluded_patterns=cfg.excluded_patterns,
+        )
         commit_type = parse_commit_type(git_info.commit_message)
 
         # 检查是否为强制提交（跳过 AI 审查）
@@ -251,8 +261,8 @@ def review(config: Optional[str]):
             click.echo(click.style("[跳过] 没有需要评审的变更", fg="yellow"))
             sys.exit(0)
 
-        # 创建评审链
-        chain = create_review_chain(cfg)
+        # 创建评审链（传入 git_info 避免重复获取）
+        chain = create_review_chain(cfg, git_info=git_info)
 
         # 执行评审
         click.echo("[AI 代码评审] 正在分析...")
